@@ -4,7 +4,7 @@
    [ring.middleware [params :as ring-params]])
   (:use
    [ring.util.response :only [redirect]]
-   [compojure.core :only [defroutes GET POST ANY PUT]]))
+   [compojure.core :only [defroutes GET POST ANY PUT DELETE]]))
 
 ;;; Project Description
 ;;; -------------------
@@ -55,12 +55,24 @@
 ;;; component registering functions with the core.
 
 (defroutes handler
-  ;; Welcome!
+
+  ;; -------------------------------
+  ;; Application Controller
+  ;; -------------------------------
   (GET "/" [] (str "Welcome to Pantheon"))
+
+  
+  ;; -------------------------------
   ;; pantheon.component.tag-database
-  (PUT "/pantheon.component.tag-database/tags/put" req (tag-db/put-tag req))
+  ;; -------------------------------
+  (PUT "/pantheon.component.tag-database/tags" {params :params} (tag-db/put-tag! params))
   (GET "/pantheon.component.tag-database/tags/:id" [id] (tag-db/get-tag id))
-  ;; catch-all
+  (DELETE "/pantheon.component.tag-database/tags/:id" [id] (tag-db/delete-tag! id))
+
+  
+  ;; -------------------------------
+  ;; Unhandled Routes
+  ;; -------------------------------
   (ANY "/*" [path] (redirect "/")))
 
 (defn build-app []
