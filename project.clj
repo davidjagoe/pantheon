@@ -13,4 +13,4 @@
                      [ring/ring-devel "0.3.10"]
                      [lein-ring "0.4.4"]
                      [marginalia "0.5.0"]]
-  :ring {:handler pantheon.core/handler})
+  :ring {:handler pantheon.core/app})

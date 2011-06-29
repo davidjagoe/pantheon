@@ -1,5 +1,7 @@
 (ns pantheon.core
-  (:require [pantheon.component.tag-database.core :as tag-db])
+  (:require
+   [pantheon.component.tag-database.core :as tag-db]
+   [ring.middleware [params :as ring-params]])
   (:use
    [ring.util.response :only [redirect]]
    [compojure.core :only [defroutes GET POST ANY PUT]]))
@@ -56,7 +58,13 @@
   ;; Welcome!
   (GET "/" [] (str "Welcome to Pantheon"))
   ;; pantheon.component.tag-database
-  (PUT "/pantheon.component.tag-database/tags/put" [tag-id params] (tag-db/put-tag tag-id params))
+  (PUT "/pantheon.component.tag-database/tags/put" req (tag-db/put-tag req))
   (GET "/pantheon.component.tag-database/tags/:id" [id] (tag-db/get-tag id))
   ;; catch-all
   (ANY "/*" [path] (redirect "/")))
+
+(defn build-app []
+  (-> #'handler
+      (ring-params/wrap-params)))
+
+(def app (build-app))

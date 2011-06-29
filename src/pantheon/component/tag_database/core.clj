@@ -19,13 +19,29 @@
 ;;; - HTTP GET interface to query for tag information by id
 ;;;
 
-(defn- get-database []
-  (fleet/load-persistent "/tmp/pantheon.component.tag-database.fdb"))
+(def DB-FILE "/tmp/pantheon.component.tag-database.fdb")
 
-(defn put-tag [id document])
+(defn- init-database []
+  (fleet/init-persistent DB-FILE))
+
+(defn- load-database []
+  (fleet/load-persistent DB-FILE))
+
+(defn put-tag [req]
+  (println req)
+  (let [tag-document (:params req)
+        db (init-database)
+        res (fleet/query db ["insert" "tags" tag-document])]
+    (fleet/close db)
+    (str res)))
 
 (defn get-tag [id]
-  (let [db (get-database)
+  (let [db (load-database)
         res (fleet/query db ["select" "tags" {"where" ["=" "id" id]}])]
     (fleet/close db)
     (str res)))
+
+;;; TODO
+;;; ----
+;;;
+;;; - Handle duplicate tag id (update? exception? email?)
