@@ -1,6 +1,7 @@
 (ns pantheon.core
   (:require
    [pantheon.component.tag-database.core :as tag-db]
+   [pantheon.component.dispatch-controller.core :as dispatch-controller]
    [ring.middleware [params :as ring-params]])
   (:use
    [ring.util.response :only [redirect]]
@@ -69,6 +70,11 @@
   (GET "/pantheon.component.tag-database/tags/:id" [id] (tag-db/get-tag id))
   (DELETE "/pantheon.component.tag-database/tags/:id" [id] (tag-db/delete-tag! id))
 
+  ;; ---------------------------------------
+  ;; pantheon.component.dispatch-controller
+  ;; ---------------------------------------
+  (PUT "/pantheon.component.dispatch-controller/shipment-documents"
+       {params :params} (dispatch-controller/receive-shipment-document params))
   
   ;; -------------------------------
   ;; Unhandled Routes
