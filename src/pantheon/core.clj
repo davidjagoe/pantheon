@@ -75,6 +75,7 @@
   ;; ---------------------------------------
   (PUT "/pantheon.component.dispatch-controller/shipment-documents"
        [] (dispatch-controller/receive-shipment-document))
+  (GET "/pantheon.component.dispatch-controller/shipment-status" [] (dispatch-controller/view-shipment-status))
   
   ;; -------------------------------
   ;; Unhandled Routes
