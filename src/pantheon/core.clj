@@ -74,7 +74,7 @@
   ;; pantheon.component.dispatch-controller
   ;; ---------------------------------------
   (PUT "/pantheon.component.dispatch-controller/shipment-documents"
-       {params :params} (dispatch-controller/receive-shipment-document params))
+       request (dispatch-controller/receive-shipment-document request))
   
   ;; -------------------------------
   ;; Unhandled Routes
@@ -85,4 +85,6 @@
   (-> #'handler
       (ring-params/wrap-params)))
 
-(def app (build-app))
+(def app
+     (dispatch-controller/boot)
+     (build-app))

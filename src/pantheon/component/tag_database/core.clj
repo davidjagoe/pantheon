@@ -72,3 +72,6 @@
 ;;;
 ;;; add tests for each function
 ;;;
+;;; what happens if we read a tag that does not refer to any products?
+;;; what value do we return? Should we make sure that all tags start
+;;; with our own prefix in case there are other tags about?
