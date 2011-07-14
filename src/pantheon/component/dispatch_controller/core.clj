@@ -3,7 +3,8 @@
            [org.llrp.ltk.generated.messages RO_ACCESS_REPORT])
   (:require
    [clojure.contrib.io :as io]
-   [com.rheosystems.clipper.core :as clipper]))
+   [com.rheosystems.clipper.core :as clipper])
+  (:use clojure.set))
 
 ;;; Dispatch Controller
 ;;; -------------------
@@ -86,15 +87,15 @@
 ;;; uploaded
 (def active-shipment-document (ref nil))
 
-;;; Products read atom
-;;; ------------------
+;;; Products Read Reference
+;;; -----------------------
 
 ;;; The products-read is updated on a callback from the RFID reader;
 ;;; its value is independent of the ref types above. We only really
 ;;; need to use this atom if the active-shipment-document is set and
 ;;; the timer has not run out - otherwise reading a tag is an error
 ;;; and is handled separately.
-(def products-read (atom nil))
+(def tags-read (ref nil))
 
 (def sample-shipment-document
      {:shipment-id "12345",
@@ -155,7 +156,7 @@
   []
   )
 
-(defn parse-shipment []
+(defn parse-shipment [& args]
   sample-shipment-document)
 
 (defn reader-active? []
@@ -168,27 +169,30 @@
 
    2. Ensure that the reader is active"
   
-  [request]
+  []
   {:pre [(reader-active?)]}
-  (let [shipment-details (parse-shipment (io/slurp* (request :body)))]
+  (println @tags-read)
+  (let [shipment-details (parse-shipment)] ; (parse-shipment (io/slurp* (request :body)))
     ;; TODO: refuse if there is already an active shipment?
     (dosync
      (alter active-shipment-document (constantly shipment-details))
      (alter departure-timer (constantly TRUCK-MUST-DEPART-WITHIN))
-     (alter truck-clear-timer (constantly WAIT-AFTER-TRUCK-CLEARED-ANTENNA)))))
+     (alter truck-clear-timer (constantly WAIT-AFTER-TRUCK-CLEARED-ANTENNA))
+     (alter tags-read (constantly #{}))))
+  nil)
 
 ;;; RFID Reader Management
 ;;; ----------------------
 
 (def handler
      (proxy [Object LLRPEndpoint] []
+       ;; TODO: Log error messages
        (errorOccured [msg] nil)
        (messageReceived [msg]
                         (if (= (.getTypeNum msg) RO_ACCESS_REPORT/TYPENUM)
-                          (let [tags (.getTagReportDataList msg)]
-                            (doseq [tag tags]
-                              (println (.getEPCParameter tag))
-                              (println (.getLastSeenTimestampUTC tag))))))))
+                          (let [tag-ids (set (map #(.. % getEPCParameter getEPC) (. msg getTagReportDataList)))]
+                            (dosync
+                             (alter tags-read (fn [current] (union current tag-ids)))))))))
 
 (def reader (LLRPConnector. handler "10.2.0.99"))
 
