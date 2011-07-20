@@ -92,3 +92,8 @@
    (build-app)))
 
 (def app (bootstrap))
+
+;;; For Testing:
+;;;
+;;; http://localhost:3000/pantheon.component.dispatch-controller/shipment-documents
+;;; http://localhost:3000/pantheon.component.tag-database/tags

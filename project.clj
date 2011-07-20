@@ -11,6 +11,6 @@
   :dev-dependencies [[ring/ring-jetty-adapter "0.3.10"]
                      [swank-clojure "1.4.0-SNAPSHOT"]
                      [ring/ring-devel "0.3.10"]
-                     [lein-ring "0.4.4"]
+                     [lein-ring "0.4.5"]
                      [marginalia "0.5.0"]]
   :ring {:handler pantheon.core/app})

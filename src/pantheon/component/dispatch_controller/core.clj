@@ -4,6 +4,7 @@
            [java.util Timer TimerTask])
   (:require
    [clojure.contrib.io :as io]
+   [clojure.contrib.graph :as g]
    [com.rheosystems.clipper.core :as clipper])
   (:use clojure.set))
 
@@ -69,7 +70,7 @@
 (def ONE-MINUTE (* 60 ONE-SECOND))
 
 (def MONITOR-PERIOD 1) ;; Seconds
-(def TRUCK-MUST-DEPART-WITHIN 2) ;; Minutes
+(def TRUCK-MUST-DEPART-WITHIN 1) ;; Minutes
 (def WAIT-AFTER-TRUCK-CLEARED-ANTENNA 10) ;; Seconds
 
 ;;; ----------------------------
@@ -127,13 +128,14 @@
 ;;; system must reach one of the 'terminal' states of MISSING-TAGS,
 ;;; EXTRA-TAGS, or COMPLETE.
 (def transitions
-     valid-states
-     {S-IDLE #{S-IDLE S-TRUCK-DEPARTING S-MISSING-TAGS S-INVALID}
-      S-TRUCK-DEPARTING #{S-TRUCK-DEPARTING S-MISSING-TAGS S-EXTRA-TAGS S-SHIPMENT-COMPLETE S-INVALID}
-      S-MISSING-TAGS #{S-IDLE S-INVALID}
-      S-EXTRA-TAGS #{S-IDLE S-INVALID}
-      S-SHIPMENT-COMPLETE #{S-IDLE S-INVALID}
-      S-INVALID #{S-IDLE}})
+     (struct g/directed-graph
+             valid-states
+             {S-IDLE #{S-IDLE S-TRUCK-DEPARTING S-MISSING-TAGS S-INVALID}
+              S-TRUCK-DEPARTING #{S-TRUCK-DEPARTING S-MISSING-TAGS S-EXTRA-TAGS S-SHIPMENT-COMPLETE S-INVALID}
+              S-MISSING-TAGS #{S-IDLE S-INVALID}
+              S-EXTRA-TAGS #{S-IDLE S-INVALID}
+              S-SHIPMENT-COMPLETE #{S-IDLE S-INVALID}
+              S-INVALID #{S-IDLE}}))
 
 (defn valid-transition?
   "Returns `to` (i.e. a truthey value) if the transition from state
@@ -237,17 +239,6 @@
           (build-status S-EXTRA-TAGS)
           (build-status S-IDLE))))))
 
-(defn log-state-change [from to]
-  (println (str from " -> " to)))
-
-(defn act-on-missing-tags! [state data])
-
-(defn act-on-extra-tags! [state data])
-
-(defn act-on-shipment-complete! [state data])
-
-(defn act-on-invalid-state! [state data])
-
 ;;; TODO: Also reset the RFID reader
 (defn system-reset! []
   (dosync
@@ -257,12 +248,35 @@
    (alter tags-read (constantly 0))
    (alter current-state (constantly S-IDLE))))
 
+(defn log-state-change [from to]
+  (if-not (= from to)
+    (println (str from " -> " to))))
+
+(defn act-on-missing-tags! [state data & rest]
+  (println state)
+  (println data)
+  (println rest)
+  (println (str "Missing tags: " data))
+  (system-reset!) ; A bit harsh! Should split system-reset! into hard and soft reset
+  )
+
+(defn act-on-extra-tags! [state data])
+
+(defn act-on-shipment-complete! [state data])
+
+(defn act-on-invalid-state! [state data])
+
+(def actions
+     {[S-TRUCK-DEPARTING S-MISSING-TAGS] act-on-missing-tags!})
+
 (defn act-on-status
   [{:keys [state data] :as status}]
   {:pre [(map? status)]}
   (if (valid-transition? @current-state state)
     (do
-      (log-state-change @current-state state))
+      (log-state-change @current-state state)
+      (apply (get actions [@current-state state] (fn [& args] nil)) state data)
+      (dosync (alter current-state (constantly state))))
     (system-reset!)))
 
 (defn start-status-monitor []
