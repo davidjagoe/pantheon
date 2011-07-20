@@ -103,6 +103,48 @@
 ;;; and is handled separately.
 (def tags-read (ref nil))
 
+;;; System States
+;;; -------------
+
+(def S-IDLE              :idle)              ; No tags read, no shipment expected
+(def S-TRUCK-DEPARTING   :truck-departing)   ; Shipment document received, TRUCK-MUST-DEPART-WITHIN timeout not reached, shipment not complete
+(def S-MISSING-TAGS      :missing-tags)      ; Active shipment, shipment not complete, TRUCK-MUST-DEPART-WITHIN timeout reached
+(def S-EXTRA-TAGS        :extra-tags)        ; Tags not expected on active shipment document have been read
+(def S-SHIPMENT-COMPLETE :shipment-complete) ; Tags read exactly match shipment document, no new tags read for WAIT-AFTER-TRUCK-CLEARED-ANTENNA secs
+(def S-INVALID           :invalid)           ; Unexpected combination of ref values; this should never happen
+
+(def valid-states
+     #{S-IDLE S-TRUCK-DEPARTING S-MISSING-TAGS
+       S-EXTRA-TAGS S-SHIPMENT-COMPLETE S-INVALID})
+
+(def current-state (ref S-IDLE :validator #(some valid-states [%])))
+
+;;; This Directed Graph represents the valid transitions between
+;;; states. For example: IDLE -> IDLE is valid (i.e. it can remain
+;;; idle); MISSING-TAGS -> MISSING-TAGS invalid (i.e. when it gets in
+;;; that state action must be taken immediately and the system put in
+;;; a new state); TRUCK-DEPARTING -> IDLE is invalid because the
+;;; system must reach one of the 'terminal' states of MISSING-TAGS,
+;;; EXTRA-TAGS, or COMPLETE.
+(def transitions
+     valid-states
+     {S-IDLE #{S-IDLE S-TRUCK-DEPARTING S-MISSING-TAGS S-INVALID}
+      S-TRUCK-DEPARTING #{S-TRUCK-DEPARTING S-MISSING-TAGS S-EXTRA-TAGS S-SHIPMENT-COMPLETE S-INVALID}
+      S-MISSING-TAGS #{S-IDLE S-INVALID}
+      S-EXTRA-TAGS #{S-IDLE S-INVALID}
+      S-SHIPMENT-COMPLETE #{S-IDLE S-INVALID}
+      S-INVALID #{S-IDLE}})
+
+(defn valid-transition?
+  "Returns `to` (i.e. a truthey value) if the transition from state
+  `from` to state `to` is valid, otherwise returns nil (i.e. falsey value)."
+  [from to]
+  (some (set (g/get-neighbors transitions from)) [to]))
+
+;;; --------
+
+;;; For development purposes
+
 (def sample-shipment-document
      {:shipment-id "12345",
       :orders
@@ -174,66 +216,54 @@
 ;;; TODO: Pattern matching in clojure? Much more readable than nested
 ;;; if statements. It is too easy to miss a possible case.
 (defn determine-shipment-status
-  "Returns the name of the current state that exists. The possible
-  states are
-
-  :nothing-doing
-  :truck-departing
-  :missing-tags
-  :extra-tags
-  :shipment-complete
-  :invalid-state
-
-   Every decision-period, we act on the system's *shipment status*.
-   This involves determines which of the named states currently
-   exists, resetting the state of the system (if appropriate) and also
-   taking the supplied action for each
-
-   - :nothing-doing
-
-     No tags read, no shipment expected
-
-   - :truck-departing
-
-     Active shipment, timeout not reached, shipment-not-complete
-
-   - :missing-tags
-
-     Active shipment, timeout reached
-
-   - :extra-tags
-
-     Tags read that are not expected on the active shipment
-     document (including the case where there is no active
-     shipment document).
-
-   - :shipment-complete
-
-     Tags read exactly match the shipment, and we have read no
-     tags for WAIT-AFTER-TRUCK-CLEARED-ANTENNA seconds."
-  
+  "Returns a map representing the name of the current status of the
+  system. The map contains a key :state and a key :data. The possible
+  states are defined above. :data contains the current shipment
+  document and the current tags read."
   []
   (let [v-shipment-doc    @active-shipment-document
         v-departure-timer @departure-timer
         v-tags-read       @tags-read]
-    (letfn [(REPORT-STATUS [status] {:status status :data {:shipment-document v-shipment-doc :tags-read v-tags-read}})]
+    (letfn [(build-status [state] {:state state :data {:shipment-document v-shipment-doc :tags-read v-tags-read}})]
       (if (active-shipment-document? v-shipment-doc)
         (if (departure-timeout-reached? v-departure-timer)
-          (REPORT-STATUS :missing-tags)
+          (build-status S-MISSING-TAGS)
           (if (shipment-complete? v-shipment-doc v-tags-read)
             ;; TODO: We actually need another state here that causes the
             ;; system to start the other timer to ensure that no more pallets are coming.
-            (REPORT-STATUS :shipment-complete)
-            (REPORT-STATUS :truck-departing)
-            ))
+            (build-status S-SHIPMENT-COMPLETE)
+            (build-status S-TRUCK-DEPARTING)))
         (if (seq @tags-read)
-          (REPORT-STATUS :extra-tags)
-          (REPORT-STATUS :nothing-doing))))))
+          (build-status S-EXTRA-TAGS)
+          (build-status S-IDLE))))))
+
+(defn log-state-change [from to]
+  (println (str from " -> " to)))
+
+(defn act-on-missing-tags! [state data])
+
+(defn act-on-extra-tags! [state data])
+
+(defn act-on-shipment-complete! [state data])
+
+(defn act-on-invalid-state! [state data])
+
+;;; TODO: Also reset the RFID reader
+(defn system-reset! []
+  (dosync
+   (alter departure-timer (constantly 0))
+   (alter truck-clear-timer (constantly 0))
+   (alter active-shipment-document (constantly 0))
+   (alter tags-read (constantly 0))
+   (alter current-state (constantly S-IDLE))))
 
 (defn act-on-status
-  [status]
+  [{:keys [state data] :as status}]
   {:pre [(map? status)]}
-  (println (:status status)))
+  (if (valid-transition? @current-state state)
+    (do
+      (log-state-change @current-state state))
+    (system-reset!)))
 
 (defn start-status-monitor []
   (let [period (clojure.core/long (* 1000 MONITOR-PERIOD))]

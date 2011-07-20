@@ -1,0 +1,1 @@
+(ns pantheon.component.tag-application-controller)
