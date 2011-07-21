@@ -398,6 +398,4 @@
      [:tr [:td "Status"] [:td (str (name @current-state))]]
      [:tr [:td "Shipment Document"] [:td (str @active-shipment-document)]]
      [:tr [:td "Tags Read"] [:td (str @tags-read)]]
-     [:tr [:td "Departure Timer"] [:td (str (:current-value @departure-timer))]]
-     ]
-    ]))
+     [:tr [:td "Departure Timer"] [:td (str (:current-value @departure-timer))]]]]))
