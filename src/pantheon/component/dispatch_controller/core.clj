@@ -6,7 +6,8 @@
    [clojure.contrib.io :as io]
    [clojure.contrib.graph :as g]
    [com.rheosystems.clipper.core :as clipper])
-  (:use clojure.set))
+  (:use clojure.set
+        [pantheon.view.core :only [html-page]]))
 
 ;;; Dispatch Controller
 ;;; -------------------
@@ -61,7 +62,7 @@
 ;;; notification controller is called, and the active shipment
 ;;; document is set to nil.
 
-;;; ----------------------------
+;;; ---------
 ;;; Constants
 ;;; ---------
 
@@ -69,43 +70,90 @@
 (def ONE-SECOND (* 1000 ONE-MS))
 (def ONE-MINUTE (* 60 ONE-SECOND))
 
-(def MONITOR-PERIOD 1) ;; Seconds
-(def TRUCK-MUST-DEPART-WITHIN 1) ;; Minutes
-(def WAIT-AFTER-TRUCK-CLEARED-ANTENNA 10) ;; Seconds
+(def MONITOR-PERIOD 1) ; Seconds
+(def TRUCK-MUST-DEPART-WITHIN 10) ; Minutes
+;; (def WAIT-AFTER-TRUCK-CLEARED-ANTENNA 10) ; Seconds
 
-;;; ----------------------------
+;;; ------
 ;;; Timers
 ;;; ------
 
-;;; The departure timer is reset and started when a shipment document
-;;; is uploaded
-(def departure-timer (ref 0 :validator number?))
+;;; A `countdown-timer` simply decrements a starting integer every
+;;; `period-ms` it is up to an observer of the timer to take action
+;;; when the counter reaches 0 (or any other number). By itself the
+;;; counter will just continue counting down.
 
-;;; The truck clear timer is started as soon as the tags read match
-;;; the products expected. We wait a while in case another (stolen)
-;;; pallet is yet to be read. If *any* is read this is reset to
+(defstruct countdown-timer :starting-value :current-value :period-ms :timer)
+
+(defn make-countdown-task
+  "Returns a proxy to java.util.TimerTask that will decrement the
+  current value of the supplied countdown-timer reference withing a dosync block."
+  [r-countdown-timer]
+  (proxy [TimerTask] []
+    (run []
+         (dosync
+          (alter r-countdown-timer
+                 (fn [countdown-timer]
+                   (assoc countdown-timer :current-value
+                          (dec (:current-value countdown-timer)))))))))
+
+(defn make-countdown-timer
+  "Returns a stopped countdown-timer."
+  [starting-value period-ms]
+  (struct countdown-timer starting-value starting-value period-ms nil))
+
+;; (defn start-countdown
+;;   "Resets and starts the supplied countdown-timer. Must be called in a dosync block."
+;;   [r-countdown-timer]
+;;   (let [period (clojure.core/long (:period-ms @countdown-timer))
+;;         timer (Timer.)
+;;         task (make-countdown-task r-countdown-timer)]
+;;     (. timer scheduleAtFixedRate task period period)
+;;     (alter r-countdown-timer
+;;            (fn [countdown-timer]
+;;              (assoc countdown-timer :timer timer :current-value (:starting-value countdown-timer))))))
+
+(defn start-countdown
+  [countdown-timer r-countdown-timer]
+  (let [period (clojure.core/long (:period-ms countdown-timer))
+        timer (Timer.)
+        task (make-countdown-task r-countdown-timer)]
+    (. timer scheduleAtFixedRate task period period)
+    (assoc countdown-timer :timer timer)))
+
+(defn timer-reset [countdown-timer]
+  (. (:timer countdown-timer) cancel)
+  (assoc countdown-timer :timer nil :current-value (:starting-value countdown-timer)))
+
+;;; Started when we receive a shipment document
+;; (def departure-timer (ref 0 :validator number?))
+(def departure-timer (ref (make-countdown-timer TRUCK-MUST-DEPART-WITHIN ONE-SECOND) :validator map?))
+
+;;; Started as soon as the tags read match the products expected. We
+;;; wait a while in case another (stolen!)  pallet is yet to be
+;;; read. If *any* tags are read this is reset to
 ;;; WAIT-AFTER-TRUCK-CLEARED-ANTENNA
-(def truck-clear-timer (ref 0 :validator number?))
+;; (def truck-clear-timer (ref 0 :validator number?))
 
-;;; Shipment Document Reference
+;;; -----------------------------
+;;; Shipment Document & Tags Read
+;;; -----------------------------
+
+(defn- map-or-nil? [thing]
+  (or (nil? thing) (map? thing)))
+
+(defn- set-or-nil? [thing]
+  (or (nil? thing) (set? thing)))
+
+;;; Set when a shipment document is uploaded from SAP
+(def active-shipment-document (ref nil :validator map-or-nil?))
+
+;;; Updated on a callback from the RFID reader
+(def tags-read (ref nil :validator set-or-nil?))
+
 ;;; ---------------------------
-
-;;; The active shipment document is set when a shipment document is
-;;; uploaded
-(def active-shipment-document (ref nil))
-
-;;; Products Read Reference
-;;; -----------------------
-
-;;; The products-read is updated on a callback from the RFID reader;
-;;; its value is independent of the ref types above. We only really
-;;; need to use this atom if the active-shipment-document is set and
-;;; the timer has not run out - otherwise reading a tag is an error
-;;; and is handled separately.
-(def tags-read (ref nil))
-
-;;; System States
-;;; -------------
+;;; System States & Transitions
+;;; ---------------------------
 
 (def S-IDLE              :idle)              ; No tags read, no shipment expected
 (def S-TRUCK-DEPARTING   :truck-departing)   ; Shipment document received, TRUCK-MUST-DEPART-WITHIN timeout not reached, shipment not complete
@@ -120,13 +168,6 @@
 
 (def current-state (ref S-IDLE :validator #(some valid-states [%])))
 
-;;; This Directed Graph represents the valid transitions between
-;;; states. For example: IDLE -> IDLE is valid (i.e. it can remain
-;;; idle); MISSING-TAGS -> MISSING-TAGS invalid (i.e. when it gets in
-;;; that state action must be taken immediately and the system put in
-;;; a new state); TRUCK-DEPARTING -> IDLE is invalid because the
-;;; system must reach one of the 'terminal' states of MISSING-TAGS,
-;;; EXTRA-TAGS, or COMPLETE.
 (def transitions
      (struct g/directed-graph
              valid-states
@@ -143,8 +184,7 @@
   [from to]
   (some (set (g/get-neighbors transitions from)) [to]))
 
-;;; --------
-
+;;; ------------------------
 ;;; For development purposes
 
 (def sample-shipment-document
@@ -160,18 +200,18 @@
          :email "jim@example.com" :cell "27769775304"}
         :items {:A 2 :B 1 :C 2}}}})
 
-;;; ----------------------------
+;;; ------------------------
 
-(defn make-countdown-task [timer-ref]
-  (proxy [TimerTask] []
-    (run []
-         (do
-           (println @timer-ref)
-           (dosync (alter timer-ref (fn [val] (dec val))))))))
+;; (defn make-countdown-task [timer-ref]
+;;   (proxy [TimerTask] []
+;;     (run []
+;;          (do
+;;            (println @timer-ref)
+;;            (dosync (alter timer-ref (fn [val] (dec val))))))))
 
-(defn start-countdown [timer-ref period-ms]
-  (let [period (clojure.core/long period-ms)]
-    (. (Timer.) scheduleAtFixedRate (make-countdown-task timer-ref) period period)))
+;; (defn start-countdown [timer-ref period-ms]
+;;   (let [period (clojure.core/long period-ms)]
+;;     (. (Timer.) scheduleAtFixedRate (make-countdown-task timer-ref) period period)))
 
 (defn parse-shipment [& args]
   sample-shipment-document)
@@ -180,22 +220,15 @@
   true)
 
 (defn receive-shipment-document
-  "Whenever we receive a shipment document we take the following steps:
-
-   1. Reset the active-shipment-document and timer refs
-
-   2. Ensure that the reader is active"
-  
-  []
-  {:pre [(reader-active?)
-         (nil? @active-shipment-document)]}
+  "Receive, parse and set the active shipment document; reset and
+  start the truck departure timer and reset the tags read reference."
+  [] {:pre [(reader-active?)
+            (nil? @active-shipment-document)]}
   (let [shipment-details (parse-shipment)] ; (parse-shipment (io/slurp* (request :body)))
     (dosync
      (alter active-shipment-document (constantly shipment-details))
-     (alter departure-timer (constantly TRUCK-MUST-DEPART-WITHIN))
-     (alter truck-clear-timer (constantly WAIT-AFTER-TRUCK-CLEARED-ANTENNA))
-     (alter tags-read (constantly #{})))
-    (start-countdown departure-timer ONE-MINUTE))
+     (alter departure-timer start-countdown departure-timer)
+     (alter tags-read (constantly #{}))))
   nil)
 
 ;;; --------------
@@ -208,8 +241,8 @@
 (defn active-shipment-document? [doc]
   (not (nil? doc)))
 
-(defn departure-timeout-reached? [timer-value]
-  (<= timer-value 0))
+(defn timed-out? [timer]
+  (<= (:current-value timer) 0))
 
 (defn shipment-complete? [shipment-document tags-read]
   (when (> (count tags-read) 5)
@@ -228,7 +261,7 @@
         v-tags-read       @tags-read]
     (letfn [(build-status [state] {:state state :data {:shipment-document v-shipment-doc :tags-read v-tags-read}})]
       (if (active-shipment-document? v-shipment-doc)
-        (if (departure-timeout-reached? v-departure-timer)
+        (if (timed-out? v-departure-timer)
           (build-status S-MISSING-TAGS)
           (if (shipment-complete? v-shipment-doc v-tags-read)
             ;; TODO: We actually need another state here that causes the
@@ -240,34 +273,54 @@
           (build-status S-IDLE))))))
 
 ;;; TODO: Also reset the RFID reader
-(defn system-reset! []
+(defn soft-reset []
   (dosync
-   (alter departure-timer (constantly 0))
-   (alter truck-clear-timer (constantly 0))
-   (alter active-shipment-document (constantly 0))
-   (alter tags-read (constantly 0))
+   (alter departure-timer timer-reset)
+   (alter active-shipment-document (constantly nil))
+   (alter tags-read (constantly nil))
    (alter current-state (constantly S-IDLE))))
+
+;;; TODO
+(defn reset-reader [])
+
+(defn hard-reset []
+  (do
+    (reset-reader)
+    (soft-reset)))
 
 (defn log-state-change [from to]
   (if-not (= from to)
     (println (str from " -> " to))))
 
-(defn act-on-missing-tags! [state data & rest]
-  (println state)
-  (println data)
-  (println rest)
-  (println (str "Missing tags: " data))
-  (system-reset!) ; A bit harsh! Should split system-reset! into hard and soft reset
-  )
+(defn act-on-missing-tags! [state data]
+  (println "Queuing missing tags notification message")
+  (soft-reset))
 
-(defn act-on-extra-tags! [state data])
+(defn act-on-extra-tags! [state data]
+  (println "Queuing extra tags notification message"))
 
-(defn act-on-shipment-complete! [state data])
+(defn act-on-shipment-complete! [state data]
+  (println "Queuing shipment complete message"))
 
-(defn act-on-invalid-state! [state data])
+(defn act-on-invalid-state! [state data]
+  (do
+    (println "Queuing invalid state message")
+    (println (str "Invalid state! " state data))
+    (hard-reset)))
 
 (def actions
      {[S-TRUCK-DEPARTING S-MISSING-TAGS] act-on-missing-tags!})
+
+(def do-nothing (constantly nil))
+
+(defn get-action [from to]
+  (cond
+   (= to S-MISSING-TAGS)                    act-on-missing-tags!
+   (= to S-EXTRA-TAGS)                      act-on-extra-tags!
+   (= to S-IDLE)                            do-nothing
+   (= [from to] [S-IDLE S-TRUCK-DEPARTING]) do-nothing
+   (= to from)                              do-nothing
+   :default (fn [& args] (println (str "No action implemented for state change " from " -> " to)))))
 
 (defn act-on-status
   [{:keys [state data] :as status}]
@@ -275,9 +328,9 @@
   (if (valid-transition? @current-state state)
     (do
       (log-state-change @current-state state)
-      (apply (get actions [@current-state state] (fn [& args] nil)) state data)
+      (apply (get-action @current-state state) [state data])
       (dosync (alter current-state (constantly state))))
-    (system-reset!)))
+    (hard-reset)))
 
 (defn start-status-monitor []
   (let [period (clojure.core/long (* 1000 MONITOR-PERIOD))]
@@ -336,4 +389,15 @@
 (defn view-shipment-status
   "Displays the current status of the shipment"
   []
-  (str @tags-read))
+  (html-page
+   [:h1 "Dispatch Status"]
+   [:table
+    [:thead
+     [:tr [:th "Key"] [:th "Value"]]]
+    [:tbody
+     [:tr [:td "Status"] [:td (str (name @current-state))]]
+     [:tr [:td "Shipment Document"] [:td (str @active-shipment-document)]]
+     [:tr [:td "Tags Read"] [:td (str @tags-read)]]
+     [:tr [:td "Departure Timer"] [:td (str (:current-value @departure-timer))]]
+     ]
+    ]))
